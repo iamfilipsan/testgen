@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TESTGEN — English · Gymnasium</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;500;600&family=Space+Mono&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Archivo',sans-serif;background:#f6f6f4;color:#0a0a0a;}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+button{cursor:pointer;transition:opacity 0.15s;}
+button:hover{opacity:0.72;}
+::placeholder{color:#c0c0c0;}
+::-webkit-scrollbar{width:3px;}
+::-webkit-scrollbar-thumb{background:#ccc;}
+details summary{list-style:none;}
+details summary::-webkit-details-marker{display:none;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState, useEffect, useRef} = React;
+
+// ─── DATA ─────────────────────────────────────────────────────────────────────
+
+const CLASSES = [
+  {id:"prima",   label:"PRIMA",   level:"A1",     cefr:"A1", book:"Get Involved A1"},
+  {id:"sekunda", label:"SEKUNDA", level:"A2",     cefr:"A2", book:"Get Involved A2"},
+  {id:"tercie",  label:"TERCIE",  level:"A2+",    cefr:"A2", book:"Get Involved A2+"},
+  {id:"kvarta",  label:"KVARTA",  level:"A2+/B1", cefr:"B1", book:"Get Involved A2+"},
+  {id:"kvinta",  label:"KVINTA",  level:"B1",     cefr:"B1", book:"EF Pre-Intermediate"},
+  {id:"sexta",   label:"SEXTA",   level:"B1+",    cefr:"B1", book:"English File Int"},
+  {id:"septima", label:"SEPTIMA", level:"B2",     cefr:"B2", book:"English File Int+"},
+  {id:"oktava",  label:"OKTÁVA",  level:"B2+",    cefr:"B2", book:"EF Upper-Int B"},
+];
+
+const CEFR = {
+  A1:"Present simple only. Max 5-word sentences. Basic vocab: family, colours, numbers, school objects. No past tense, no modals.",
+  A2:"Present simple/continuous, past simple (regular verbs). Everyday vocab: food, school, sports. Max 8-word sentences.",
+  B1:"Present perfect, past simple/continuous, will/going to, modals (can/should/must). Intermediate vocab.",
+  B2:"All conditionals, passive, reported speech, gerunds/infinitives. Advanced vocabulary. Complex sentences allowed.",
+};
+
+const DEFAULT_TYPES = [
+  "Grammar — Fill in the gaps",
+  "Grammar — Multiple choice (4 options)",
+  "Grammar — Transform / rewrite sentences",
+  "Vocabulary — Translation CZ→EN",
+  "Vocabulary — Definitions (write the word)",
+  "Vocabulary — Fill in the gaps",
+  "Writing — Complete the sentences",
+];
+
+const DEFAULT_TOPICS = {
+  prima:   ["Present simple","Numbers & colours","Family vocabulary","School objects"],
+  sekunda: ["Present continuous","Past simple","Daily routines","Food & drink"],
+  tercie:  ["Comparatives","Going to / will","Environment","Travel & transport"],
+  kvarta:  ["Zero & first conditional","Used to","Quantities","Home & rooms"],
+  kvinta:  ["Present perfect","Passive voice","Health & medicine","Media & technology"],
+  sexta:   ["Modal verbs","Reported speech","Crime & justice","Social media"],
+  septima: ["Second & third conditional","Gerunds & infinitives","Business English","Global issues"],
+  oktava:  ["Mixed grammar","Discourse markers","Academic vocabulary","MATURA prep"],
+};
+
+function load(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+
+async function claude(apiKey, prompt) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer "+apiKey,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      max_tokens: 4000,
+      messages: [
+        {role:"system", content:"You are an expert English examiner for Czech gymnasium. Strict CEFR compliance. Respond ONLY with raw valid JSON — zero markdown, zero fences, nothing else."},
+        {role:"user", content:prompt}
+      ],
+    }),
+  });
+  const d = await res.json();
+  if (d.error) throw new Error(d.error.message);
+  const raw = d.choices?.[0]?.message?.content || "";
+  const cleaned = raw.replace(/^```(?:json)?\n?/i,"").replace(/\n?```$/,"").trim();
+  const m = cleaned.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("No JSON found in response");
+  return JSON.parse(m[0]);
+}
+
+function promptTest(cls, topics, n, types, words, variant) {
+  const typeList = Array.from({length:n}, (_,i) => `${i+1}. ${types[i % types.length]}`).join("\n");
+  const vNote = variant==="B"
+    ? "VARIANT B: same difficulty and topic but entirely different sentences, words and examples so students cannot copy."
+    : "VARIANT A.";
+  return `You are creating an English test with EXACTLY ${n} sections. ${vNote}
+CLASS: ${cls.label} | CEFR: ${cls.cefr} (${cls.level}) | TOPIC(S): ${topics.join(", ")}
+CEFR RULES: ${CEFR[cls.cefr]}
+${words ? `MUST include: ${words}` : ""}
+
+CRITICAL REQUIREMENT: The "sections" array MUST contain EXACTLY ${n} objects. Count them before responding.
+
+Section types in order:
+${typeList}
+
+Each section object must have:
+- "type": the section type name
+- "instructions": brief instruction for students  
+- "wordBox": array of words for word-box exercises, null otherwise
+- "content": array of EXACTLY 5 item objects
+- "score": 5
+
+Each content item: {"question":"...","options":["A","B","C","D"] or null,"czech":"czech text" or null}
+Use ___ for blanks. options only for multiple choice. czech only for translation exercises.
+
+Return ONLY valid JSON, no markdown:
+{"title":"...","class":"${cls.label}","topics":"${topics.join(", ")}","variant":"${variant}","level":"${cls.level}","sections":[/* EXACTLY ${n} section objects */]}`;
+}
+
+function promptRegen(cls, topic, sec, variant, extra) {
+  return `Regenerate ONE test section. ${extra || "Use fresh items, same difficulty."}
+CLASS: ${cls.label} | CEFR: ${cls.cefr} | TOPIC: ${topic} | VARIANT: ${variant}
+CEFR RULES: ${CEFR[cls.cefr]}
+TYPE: ${sec.type} | ITEMS: ${sec.content?.length || 5}
+Return ONLY raw JSON (no fences):
+{"type":"${sec.type}","instructions":"...","wordBox":null,"content":[{"question":"...","options":null,"czech":null}],"score":${sec.score||5}}`;
+}
+
+// ─── PDF ──────────────────────────────────────────────────────────────────────
+
+function makePDF(test, variant) {
+  const secs = test.sections || [];
+  const total = secs.reduce((s,x) => s+(x.score||0), 0);
+
+  // Short section = no options, ≤5 items, not writing → can go in 2-col
+  const isShort = s => {
+    if (!s.content?.length) return false;
+    if (s.type?.toLowerCase().includes("writing")) return false;
+    if (s.content.some(i => i?.options)) return false;
+    return true;
+  };
+
+  const cleanOpt = o => o.replace(/^[A-Da-d][.)]\s*/, "");
+
+  const itemHTML = (item, i) => {
+    if (!item) return "";
+    if (item.czech) {
+      return `<div class="item"><span class="num">${i+1}.</span><div class="item-body"><span class="cz">${item.czech}</span> <span class="arrow">→</span> <span class="blank">_______________________</span></div></div>`;
+    }
+    const q = item.question || "";
+    if (item.options) {
+      const opts = item.options.map((o,j) => `<span class="opt"><b>${String.fromCharCode(65+j)}.</b> ${cleanOpt(o)}</span>`).join("");
+      return `<div class="item item-mc"><span class="num">${i+1}.</span><div class="item-body"><div class="q">${q}</div><div class="opts">${opts}</div></div></div>`;
+    }
+    return `<div class="item item-write"><span class="num">${i+1}.</span><div class="item-body"><div class="q">${q}</div><div class="writeline"></div></div></div>`;
+  };
+
+  const secHTML = (sec, idx) => {
+    const letter = String.fromCharCode(65+idx);
+    const wb = sec.wordBox?.length
+      ? `<div class="wordbox">${sec.wordBox.map(w=>`<span class="word">${w}</span>`).join("")}</div>` : "";
+    const items = (sec.content||[]).map((item,i) => itemHTML(item,i)).join("");
+    return `<div class="sec">
+      <div class="sec-head">
+        <span class="sec-letter">${letter}</span>
+        <div class="sec-title">
+          <div class="sec-type">${sec.type}</div>
+          ${sec.instructions ? `<div class="sec-instr">${sec.instructions}</div>` : ""}
+        </div>
+        <div class="sec-score">___/${sec.score||5}</div>
+      </div>
+      ${wb}${items}
+    </div>`;
+  };
+
+  // Build layout: pair short sections into 2-col rows
+  let rows = [];
+  let idx = 0;
+  while (idx < secs.length) {
+    const s1 = secs[idx];
+    const s2 = secs[idx+1];
+    if (s2 && isShort(s1) && isShort(s2)) {
+      rows.push(`<div class="row-2col">${secHTML(s1,idx)}${secHTML(s2,idx+1)}</div>`);
+      idx += 2;
+    } else {
+      rows.push(`<div class="row-1col">${secHTML(s1,idx)}</div>`);
+      idx++;
+    }
+  }
+
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>${test.title}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;background:#eee;}
+.page{width:210mm;min-height:297mm;margin:0 auto;padding:12mm 14mm;background:#fff;}
+/* Header */
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-top:2.5pt solid #000;border-bottom:1pt solid #bbb;padding:8pt 0 7pt;margin-bottom:14pt;}
+.hdr-left .variant{font-size:7.5pt;letter-spacing:0.18em;color:#bbb;margin-bottom:3pt;font-family:monospace;}
+.hdr-left .title{font-size:14pt;font-weight:900;letter-spacing:0.02em;}
+.hdr-right{text-align:right;display:flex;flex-direction:column;gap:4pt;}
+.hdr-right span{font-size:9.5pt;font-weight:500;}
+/* Layout */
+.row-2col{display:flex;gap:14pt;margin-bottom:4pt;}
+.row-2col .sec{flex:1;min-width:0;}
+.row-1col .sec{width:100%;}
+/* Section */
+.sec{margin-bottom:12pt;page-break-inside:avoid;}
+.sec-head{display:flex;align-items:flex-start;gap:8pt;margin-bottom:7pt;}
+.sec-letter{font-size:22pt;font-weight:900;color:#e0e0e0;line-height:1;flex-shrink:0;width:22pt;}
+.sec-title{flex:1;}
+.sec-type{font-size:8pt;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;}
+.sec-instr{font-size:8pt;color:#888;font-style:italic;margin-top:1pt;}
+.sec-score{font-size:8pt;color:#bbb;font-family:monospace;white-space:nowrap;padding-top:2pt;}
+/* Word box */
+.wordbox{display:flex;flex-wrap:wrap;gap:5pt;padding:5pt 8pt;border:0.75pt solid #ddd;background:#f8f8f8;margin-bottom:7pt;}
+.word{font-family:monospace;font-size:8.5pt;background:#efefef;padding:1pt 7pt;}
+/* Items */
+.item{display:flex;gap:7pt;margin-bottom:7pt;line-height:1.55;}
+.num{font-size:8pt;color:#bbb;font-family:monospace;min-width:14pt;flex-shrink:0;padding-top:1.5pt;}
+.item-body{flex:1;}
+.cz{color:#666;font-size:9pt;}
+.arrow{color:#bbb;margin:0 3pt;}
+.blank{border-bottom:0.75pt solid #999;display:inline-block;min-width:100pt;}
+.q{margin-bottom:3pt;}
+.opts{display:flex;flex-wrap:wrap;gap:3pt 12pt;}
+.opt{font-size:9pt;color:#444;}
+.opt b{color:#111;margin-right:2pt;}
+.item-write .writeline{border-bottom:0.75pt solid #ccc;height:16pt;margin-top:2pt;}
+/* Footer */
+.footer{border-top:2pt solid #000;margin-top:12pt;padding-top:7pt;text-align:right;font-size:11pt;font-weight:900;letter-spacing:0.08em;}
+/* Print */
+.printbtn{position:fixed;top:14px;right:14px;background:#000;color:#fff;border:none;padding:9px 18px;font-size:9px;letter-spacing:0.18em;font-weight:700;cursor:pointer;z-index:99;}
+@media print{
+  body{background:#fff;}
+  .page{padding:10mm 12mm;box-shadow:none;}
+  .printbtn{display:none!important;}
+  a[href]:after{content:none!important;}
+  @page{margin:0;size:A4;}
+}
+@media screen{.page{margin:16px auto;box-shadow:0 2px 20px rgba(0,0,0,.15);}}
+</style></head>
+<body>
+<button class="printbtn" onclick="window.print()">PRINT / PDF</button>
+<div class="page">
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="variant">VARIANT ${variant}</div>
+      <div class="title">${test.title}</div>
+    </div>
+    <div class="hdr-right">
+      <span>NAME: _________________________________</span>
+      <span>CLASS: ____________&nbsp;&nbsp; DATE: ____________</span>
+    </div>
+  </div>
+  ${rows.join("")}
+  <div class="footer">TOTAL: _____ / ${total}</div>
+</div>
+</body></html>`;
+}
+
+function openPDF(test, variant) {
+  const html = makePDF(test, variant);
+  const url = URL.createObjectURL(new Blob([html], {type:"text/html"}));
+  window.open(url, "_blank");
+}
+
+// ─── WORD ─────────────────────────────────────────────────────────────────────
+// Uses HTML→Word via mhtml blob — no CDN needed, works everywhere
+
+function exportWord(test, variant) {
+  const secs = test.sections || [];
+  const total = secs.reduce((s,x) => s+(x.score||0), 0);
+  const cleanOpt = o => o.replace(/^[A-Da-d][.)]\s*/, "");
+
+  const itemRow = (item, i) => {
+    if (item.czech) {
+      return `<tr><td class="num">${i+1}.</td><td class="cell"><span class="cz">${item.czech}</span>&nbsp;&nbsp;→&nbsp;&nbsp;<span class="blank">_______________________</span></td></tr>`;
+    }
+    if (item.options) {
+      const opts = item.options.map((o,j) => `<b>${String.fromCharCode(65+j)}.</b> ${cleanOpt(o)}`).join("&nbsp;&nbsp;&nbsp;");
+      return `<tr><td class="num">${i+1}.</td><td class="cell">${item.question||""}<br><span class="opts">${opts}</span></td></tr>`;
+    }
+    return `<tr><td class="num">${i+1}.</td><td class="cell">${item.question||""}<div class="wline"></div></td></tr>`;
+  };
+
+  const secHTML = (sec, idx) => {
+    const letter = String.fromCharCode(65+idx);
+    const wb = sec.wordBox?.length
+      ? `<p class="wordbox">${sec.wordBox.map(w=>`<span class="word">${w}</span>`).join(" &nbsp; ")}</p>` : "";
+    const rows = (sec.content||[]).map((item,i) => itemRow(item,i)).join("");
+    return `
+    <table class="sec-head"><tr>
+      <td class="letter">${letter}</td>
+      <td class="sec-info"><div class="sec-type">${sec.type}</div>${sec.instructions?`<div class="sec-instr">${sec.instructions}</div>`:""}</td>
+      <td class="sec-score">___/${sec.score||5}</td>
+    </tr></table>
+    ${wb}
+    <table class="items">${rows}</table>
+    <p>&nbsp;</p>`;
+  };
+
+  const body = secs.map((sec,i) => secHTML(sec,i)).join("");
+
+  const wordHTML = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+<style>
+  @page{size:21cm 29.7cm;margin:2cm 2.2cm;}
+  body{font-family:Arial,sans-serif;font-size:10.5pt;color:#111;}
+  .hdr-table{width:100%;border-bottom:2pt solid #000;padding-bottom:6pt;margin-bottom:14pt;}
+  .variant{font-size:7pt;letter-spacing:3pt;color:#bbb;margin-bottom:3pt;}
+  .title{font-size:15pt;font-weight:bold;}
+  .fields{text-align:right;font-size:9.5pt;}
+  .sec-head{width:100%;border-collapse:collapse;margin-bottom:4pt;}
+  .letter{font-size:20pt;font-weight:bold;color:#ddd;width:24pt;vertical-align:top;padding-right:6pt;}
+  .sec-info{vertical-align:top;}
+  .sec-type{font-size:8pt;font-weight:bold;text-transform:uppercase;letter-spacing:1.5pt;}
+  .sec-instr{font-size:8pt;color:#888;font-style:italic;}
+  .sec-score{text-align:right;font-size:8pt;color:#bbb;white-space:nowrap;vertical-align:top;padding-left:6pt;}
+  .wordbox{border:0.75pt solid #ccc;background:#f8f8f8;padding:4pt 8pt;margin-bottom:6pt;font-size:9pt;}
+  .word{font-family:Courier New,monospace;background:#eee;padding:0 5pt;}
+  .items{width:100%;border-collapse:collapse;margin-bottom:8pt;}
+  .num{font-size:8pt;color:#bbb;font-family:Courier New;width:16pt;vertical-align:top;padding-top:2pt;padding-right:5pt;}
+  .cell{font-size:10pt;padding-bottom:6pt;line-height:1.5;}
+  .cz{color:#666;font-size:9pt;}
+  .blank{border-bottom:0.75pt solid #999;display:inline-block;width:130pt;}
+  .opts{font-size:9pt;color:#444;}
+  .wline{border-bottom:0.75pt solid #ccc;height:14pt;margin-top:3pt;}
+  .footer{border-top:2pt solid #000;margin-top:10pt;padding-top:6pt;text-align:right;font-size:12pt;font-weight:bold;}
+</style></head>
+<body>
+<table class="hdr-table"><tr>
+  <td><div class="variant">VARIANT ${variant}</div><div class="title">${test.title}</div></td>
+  <td class="fields">NAME: _________________________________<br>CLASS: ____________&nbsp;&nbsp; DATE: ____________</td>
+</tr></table>
+${body}
+<div class="footer">TOTAL: _____ / ${total}</div>
+</body></html>`;
+
+  const blob = new Blob(["\ufeff", wordHTML], {type:"application/msword"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${(test.title||"test").replace(/\s+/g,"-")}-V${variant}.doc`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+
+// ─── SMALL COMPONENTS ─────────────────────────────────────────────────────────
+
+const Spinner = ({label=""}) => (
+  <span style={{display:"inline-flex",alignItems:"center",gap:7,color:"#888"}}>
+    <span style={{display:"inline-block",width:12,height:12,border:"1.5px solid #ccc",borderTopColor:"#333",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>
+    {label && <span style={{fontSize:10,letterSpacing:"0.18em"}}>{label}</span>}
+  </span>
+);
+
+// Chips with expand after row 3 (~full row = ~6 chips)
+function ChipList({items, selected, onToggle, onRemove}) {
+  const [exp, setExp] = useState(false);
+  const LIMIT = 6;
+  const visible = exp ? items : items.slice(0, LIMIT);
+  const hasMore = items.length > LIMIT;
+  return (
+    <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+      {visible.map((item,i) => (
+        <span key={item} style={{display:"inline-flex",alignItems:"center",gap:0}}>
+          <button
+            onClick={() => onToggle(item)}
+            style={{...S.chip, ...(selected.includes(item)?S.chipOn:{}), borderRight:onRemove?"none":undefined, paddingRight:onRemove?8:undefined}}>
+            {item}
+          </button>
+          {onRemove && (
+            <button onClick={() => onRemove(i)}
+              style={{height:"100%",border:"1px solid",borderColor:selected.includes(item)?"#0a0a0a":"#d0d0d0",borderLeft:"none",background:selected.includes(item)?"#0a0a0a":"none",color:selected.includes(item)?"#666":"#ccc",padding:"0 7px",fontSize:13,lineHeight:1,display:"flex",alignItems:"center",cursor:"pointer"}}>
+              ×
+            </button>
+          )}
+        </span>
+      ))}
+      {hasMore && (
+        <button onClick={() => setExp(v=>!v)}
+          style={{...S.chip,color:"#aaa",borderStyle:"dashed",borderColor:"#d8d8d8"}}>
+          {exp ? "less ↑" : `+${items.length-LIMIT} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AddInput({placeholder, onAdd}) {
+  const [val, setVal] = useState("");
+  const add = () => { if(val.trim()) { onAdd(val.trim()); setVal(""); }};
+  return (
+    <div style={{display:"flex",gap:6,marginTop:8}}>
+      <input style={{...S.input,flex:1,padding:"8px 11px",fontSize:12}}
+        placeholder={placeholder} value={val}
+        onChange={e=>setVal(e.target.value)}
+        onKeyDown={e=>e.key==="Enter"&&add()} />
+      <button style={S.btnGhost} onClick={add}>+ ADD</button>
+    </div>
+  );
+}
+
+// ─── SECTION EDITOR ───────────────────────────────────────────────────────────
+
+function SectionEditor({section, onClose, onSave}) {
+  const [instructions, setInstructions] = useState(section.instructions||"");
+  const [wb, setWb] = useState((section.wordBox||[]).join(", "));
+  const [items, setItems] = useState(
+    (section.content||[]).map(item =>
+      typeof item==="string" ? {question:item,options:null,czech:null}
+      : {question:item.question||"",options:item.options||null,czech:item.czech||null}
+    )
+  );
+  const upd = (i,f,v) => setItems(p=>p.map((it,idx)=>idx===i?{...it,[f]:v}:it));
+  const updO = (i,j,v) => setItems(p=>p.map((it,idx)=>{
+    if(idx!==i) return it;
+    const o=[...(it.options||["","","",""])]; o[j]=v; return {...it,options:o};
+  }));
+  const add = () => setItems(p=>[...p,{
+    question:"",
+    options:items[0]?.options?["","","",""]:null,
+    czech:items[0]?.czech!==undefined?null:null,
+  }]);
+  const del = i => setItems(p=>p.filter((_,idx)=>idx!==i));
+  const save = () => {
+    const wordBox = wb.trim() ? wb.split(",").map(w=>w.trim()).filter(Boolean) : null;
+    onSave({...section, instructions, wordBox, content:items});
+  };
+  return (
+    <div style={{background:"#fff",border:"1px solid #d8d8d8",padding:"18px 20px",animation:"fadeIn 0.2s ease"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <span style={{fontFamily:"'Archivo Black',sans-serif",fontSize:12,letterSpacing:"0.1em"}}>EDIT — {section.type}</span>
+        <div style={{display:"flex",gap:5}}>
+          <button style={S.btnGhost} onClick={onClose}>CANCEL</button>
+          <button style={S.btnDark} onClick={save}>SAVE</button>
+        </div>
+      </div>
+      <div style={{marginBottom:10}}><div style={S.micro}>INSTRUCTIONS</div><input style={S.input} value={instructions} onChange={e=>setInstructions(e.target.value)}/></div>
+      <div style={{marginBottom:14}}><div style={S.micro}>WORD BOX (comma separated)</div><input style={S.input} placeholder="word1, word2..." value={wb} onChange={e=>setWb(e.target.value)}/></div>
+      <div style={S.micro}>ITEMS</div>
+      {items.map((item,i) => (
+        <div key={i} style={{background:"#f9f9f9",border:"1px solid #ebebeb",padding:"10px 12px",marginBottom:5,display:"flex",gap:8}}>
+          <span style={{fontFamily:"'Space Mono',monospace",fontSize:11,color:"#ccc",paddingTop:9,minWidth:18}}>{i+1}.</span>
+          <div style={{flex:1}}>
+            {item.czech !== null ? (
+              <div style={{display:"flex",gap:7}}>
+                <div style={{flex:1}}><div style={S.micro}>CZECH</div><input style={S.input} value={item.czech||""} onChange={e=>upd(i,"czech",e.target.value)}/></div>
+                <div style={{flex:1}}><div style={S.micro}>ENGLISH</div><input style={S.input} value={item.question||""} onChange={e=>upd(i,"question",e.target.value)}/></div>
+              </div>
+            ) : (
+              <><div style={S.micro}>SENTENCE</div><input style={S.input} value={item.question||""} onChange={e=>upd(i,"question",e.target.value)} placeholder="Use ___ for blanks"/></>
+            )}
+            {item.options && (
+              <div style={{display:"flex",gap:5,marginTop:7,flexWrap:"wrap"}}>
+                {item.options.map((o,j) => (
+                  <div key={j} style={{flex:"1 1 90px"}}><div style={S.micro}>{String.fromCharCode(65+j)}</div><input style={S.input} value={o} onChange={e=>updO(i,j,e.target.value)}/></div>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={()=>del(i)} style={{background:"none",border:"none",color:"#ccc",fontSize:18,paddingTop:4,flexShrink:0}}>×</button>
+        </div>
+      ))}
+      <button style={{...S.btnGhost,marginTop:6,fontSize:10}} onClick={add}>+ ADD ITEM</button>
+    </div>
+  );
+}
+
+// ─── SECTION CARD ─────────────────────────────────────────────────────────────
+
+function SectionCard({section, index, variant, cls, topic, apiKey, onUpdate}) {
+  const [loading, setLoading] = useState(false);
+  const [cp, setCp] = useState("");
+  const [showP, setShowP] = useState(false);
+  const [editing, setEditing] = useState(false);
+
+  const doRegen = async (extra="") => {
+    setLoading(true); setShowP(false); setCp("");
+    try { onUpdate(index, await claude(apiKey, promptRegen(cls, topic, section, variant, extra))); }
+    catch(e) { alert("Failed: "+e.message); }
+    setLoading(false);
+  };
+
+  const renderItems = () => (section.content||[]).map((item,i) => (
+    <div key={i} style={{display:"flex",gap:11,marginBottom:12,fontSize:13,lineHeight:1.75}}>
+      <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#ccc",flexShrink:0,paddingTop:2,minWidth:18}}>{i+1}.</span>
+      <div style={{flex:1}}>
+        {typeof item==="string" ? item : (<>
+          <div>{item.czech
+            ? <><span style={{color:"#aaa",fontSize:12}}>{item.czech}</span>&nbsp;&nbsp;→&nbsp;&nbsp;___________________________</>
+            : item.question}
+          </div>
+          {item.options && (
+            <div style={{display:"flex",gap:18,marginTop:4,flexWrap:"wrap"}}>
+              {item.options.map((o,j) => <span key={j} style={{fontSize:11,color:"#555"}}><b style={{color:"#111",marginRight:2}}>{String.fromCharCode(65+j)}.</b>{o.replace(/^[A-Da-d][.)]\s*/,"")}</span>)}
+            </div>
+          )}
+        </>)}
+      </div>
+    </div>
+  ));
+
+  if (editing) return (
+    <div style={{marginBottom:24}}>
+      <SectionEditor section={section} onClose={()=>setEditing(false)} onSave={s=>{onUpdate(index,s);setEditing(false);}}/>
+    </div>
+  );
+
+  return (
+    <div style={{borderBottom:"1px solid #e8e8e8",paddingBottom:22,marginBottom:22,animation:"fadeIn 0.3s ease"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,gap:8,flexWrap:"wrap"}}>
+        <div style={{display:"flex",gap:13,alignItems:"flex-start"}}>
+          <span style={{fontFamily:"'Archivo Black',sans-serif",fontSize:30,lineHeight:1,color:"#ebebeb",flexShrink:0}}>{String.fromCharCode(64+index+1)}</span>
+          <div>
+            <div style={{fontWeight:700,fontSize:11,letterSpacing:"0.12em",textTransform:"uppercase"}}>{section.type}</div>
+            {section.instructions && <div style={{fontSize:11,color:"#aaa",marginTop:2,fontStyle:"italic"}}>{section.instructions}</div>}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:4,alignItems:"center",flexShrink:0}}>
+          {loading ? <Spinner label="REGEN"/> : (<>
+            <button style={S.btnGhost} onClick={()=>setShowP(v=>!v)}>PROMPT</button>
+            <button style={S.btnGhost} onClick={()=>setEditing(true)}>EDIT</button>
+            <button style={S.btnGhost} onClick={()=>doRegen()}>↻</button>
+          </>)}
+        </div>
+      </div>
+      {showP && !loading && (
+        <div style={{display:"flex",gap:6,marginBottom:11,marginLeft:43,animation:"fadeIn 0.2s ease"}}>
+          <input style={{...S.input,flex:1,fontSize:12,padding:"8px 11px",fontStyle:"italic"}}
+            placeholder="e.g. include: drought, species..."
+            value={cp} onChange={e=>setCp(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&doRegen(cp)} autoFocus/>
+          <button style={S.btnDark} onClick={()=>doRegen(cp)}>APPLY</button>
+        </div>
+      )}
+      <div style={{paddingLeft:43}}>
+        {section.wordBox?.length > 0 && (
+          <div style={{border:"1px solid #ebebeb",padding:"8px 12px",display:"flex",flexWrap:"wrap",gap:7,marginBottom:12,background:"#fafafa"}}>
+            {section.wordBox.map((w,i) => <span key={i} style={{fontFamily:"'Space Mono',monospace",fontSize:11,background:"#f0f0f0",padding:"2px 9px"}}>{w}</span>)}
+          </div>
+        )}
+        {renderItems()}
+      </div>
+      <div style={{textAlign:"right",fontFamily:"'Space Mono',monospace",fontSize:10,color:"#ccc",marginTop:2}}>Score ___/{section.score||5}</div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const [view, setView] = useState("dashboard");
+  const [apiKey, setApiKey] = useState(() => load("tg_apikey",""));
+  const [showKey, setShowKey] = useState(false);
+  const [saved, setSaved] = useState(() => load("tg_saved",[]));
+  const [allTypes, setAllTypes] = useState(() => load("tg_types", DEFAULT_TYPES));
+  const [allTopics, setAllTopics] = useState(() => load("tg_topics", DEFAULT_TOPICS));
+
+  useEffect(() => localStorage.setItem("tg_apikey", JSON.stringify(apiKey)), [apiKey]);
+  useEffect(() => localStorage.setItem("tg_saved", JSON.stringify(saved)), [saved]);
+  useEffect(() => localStorage.setItem("tg_types", JSON.stringify(allTypes)), [allTypes]);
+  useEffect(() => localStorage.setItem("tg_topics", JSON.stringify(allTopics)), [allTopics]);
+
+  const [form, setForm] = useState({classId:"",topics:[],customTopic:"",n:3,types:[],words:"",ab:true});
+  const [gen, setGen] = useState(false);
+  const [genMsg, setGenMsg] = useState("");
+  const [test, setTest] = useState(null);
+  const [variant, setVariant] = useState("A");
+  
+  const [search, setSearch] = useState("");
+  const [filterCls, setFilterCls] = useState("");
+
+  const cls = CLASSES.find(c => c.id===form.classId);
+  const currentTopics = allTopics[form.classId] || [];
+  const activeTopic = form.customTopic || (form.topics.length>0 ? form.topics.join(" + ") : "");
+  const activeTypes = form.types.length>0 ? form.types : allTypes;
+
+  const generate = async () => {
+    if (!apiKey) { alert("Please enter your OpenAI API key first."); setShowKey(true); return; }
+    if (!form.classId || !activeTopic) return;
+    setGen(true);
+    try {
+      const topicsArr = form.topics.length>0 ? form.topics : [activeTopic];
+      setGenMsg("VARIANT A...");
+      const A = await claude(apiKey, promptTest(cls, topicsArr, form.n, activeTypes, form.words, "A"));
+      let B = null;
+      if (form.ab) {
+        setGenMsg("VARIANT B...");
+        B = await claude(apiKey, promptTest(cls, topicsArr, form.n, activeTypes, form.words, "B"));
+      }
+      setTest({id:Date.now(), createdAt:new Date().toLocaleDateString("cs-CZ"), classId:form.classId, variants:{A,B}});
+      setVariant("A"); setView("preview");
+    } catch(e) { alert("Failed: "+e.message); console.error(e); }
+    setGen(false); setGenMsg("");
+  };
+
+  const updSec = (v,idx,sec) => setTest(prev=>({
+    ...prev, variants:{...prev.variants, [v]:{...prev.variants[v],
+      sections:prev.variants[v].sections.map((s,i)=>i===idx?sec:s)}}
+  }));
+
+  const saveTest = () => setSaved(prev => {
+    const ex = prev.find(t=>t.id===test.id);
+    return ex ? prev.map(t=>t.id===test.id?test:t) : [test,...prev];
+  });
+
+  const activeData = test?.variants?.[variant];
+  const filtered = saved.filter(t => {
+    const c = CLASSES.find(x=>x.id===t.classId);
+    const title = t.variants?.A?.title||"";
+    return (filterCls ? t.classId===filterCls : true)
+      && (search ? title.toLowerCase().includes(search.toLowerCase()) || c?.label.toLowerCase().includes(search.toLowerCase()) : true);
+  });
+
+  const toggleTopic = t => setForm(f=>({...f, topics:f.topics.includes(t)?f.topics.filter(x=>x!==t):[...f.topics,t], customTopic:""}));
+  const toggleType = t => setForm(f=>({...f, types:f.types.includes(t)?f.types.filter(x=>x!==t):[...f.types,t]}));
+
+  const removeTopic = i => {
+    const t = currentTopics[i];
+    setAllTopics(p=>({...p,[form.classId]:p[form.classId].filter((_,idx)=>idx!==i)}));
+    setForm(f=>({...f,topics:f.topics.filter(x=>x!==t)}));
+  };
+  const removeType = i => {
+    const t = allTypes[i];
+    setAllTypes(p=>p.filter((_,idx)=>idx!==i));
+    setForm(f=>({...f,types:f.types.filter(x=>x!==t)}));
+  };
+
+  return (
+    <div style={{fontFamily:"'Archivo',sans-serif",background:"#f6f6f4",minHeight:"100vh",color:"#0a0a0a"}}>
+
+      {/* API KEY BANNER */}
+      {(!apiKey || showKey) && (
+        <div style={{background:"#0a0a0a",padding:"10px 24px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:10,letterSpacing:"0.14em",color:"#888",flexShrink:0}}>OPENAI API KEY</span>
+          <input
+            type="password"
+            style={{flex:1,minWidth:260,background:"#1a1a1a",border:"1px solid #333",color:"#fff",padding:"7px 12px",fontSize:12,fontFamily:"'Archivo',sans-serif",outline:"none"}}
+            placeholder="sk-..."
+            value={apiKey}
+            onChange={e=>setApiKey(e.target.value)}
+          />
+          {apiKey && <button style={{...S.btnGhost,borderColor:"#444",color:"#aaa",fontSize:10}} onClick={()=>setShowKey(false)}>DONE</button>}
+          <span style={{fontSize:10,color:"#555",letterSpacing:"0.08em"}}>Stored locally in your browser.</span>
+        </div>
+      )}
+
+      {/* NAV */}
+      <nav style={{background:"#0a0a0a",position:"sticky",top:0,zIndex:99,borderBottom:"1px solid #1a1a1a"}}>
+        <div style={{maxWidth:900,margin:"0 auto",padding:"0 24px",height:50,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"baseline",gap:9,cursor:"pointer"}} onClick={()=>setView("dashboard")}>
+            <span style={{fontFamily:"'Archivo Black',sans-serif",fontSize:14,color:"#fff",letterSpacing:"0.15em"}}>TESTGEN</span>
+            <span style={{fontSize:9,color:"#555",letterSpacing:"0.16em"}}>ENGLISH · GYMNASIUM</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center"}}>
+            {[["dashboard","OVERVIEW"],["create","NEW TEST"],["saved",`SAVED (${saved.length})`]].map(([v,l])=>(
+              <button key={v} onClick={()=>setView(v)} style={{background:"none",border:"none",color:(view===v||(view==="preview"&&v==="create"))?"#fff":"#555",fontSize:10,letterSpacing:"0.16em",padding:"6px 13px",fontFamily:"'Archivo',sans-serif",fontWeight:500}}>
+                {l}
+              </button>
+            ))}
+            <button onClick={()=>setShowKey(v=>!v)} style={{background:"none",border:"none",color:apiKey?"#555":"#e55",fontSize:10,letterSpacing:"0.16em",padding:"6px 10px",fontFamily:"'Archivo',sans-serif",fontWeight:500}} title="API Key">
+              {apiKey?"KEY ✓":"KEY ⚠"}
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      {/* DASHBOARD */}
+      {view==="dashboard" && (
+        <main style={{maxWidth:900,margin:"0 auto",padding:"44px 24px 96px"}}>
+          <p style={{fontSize:10,letterSpacing:"0.24em",color:"#aaa",marginBottom:13}}>SELECT CLASS</p>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:1,background:"#ddd",border:"1px solid #ddd",marginBottom:44}}>
+            {CLASSES.map(c => (
+              <div key={c.id}
+                onClick={()=>{setForm(f=>({...f,classId:c.id,topics:[]}));setView("create");}}
+                style={{background:"#f6f6f4",padding:"20px 18px",cursor:"pointer",transition:"background 0.12s",position:"relative"}}>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"#bbb",marginBottom:4,transition:"color 0.12s"}}>{c.level}</div>
+                <div style={{fontFamily:"'Archivo Black',sans-serif",fontSize:18,letterSpacing:"0.04em",marginBottom:4,transition:"color 0.12s"}}>{c.label}</div>
+                <div style={{fontSize:9,color:"#bbb",transition:"color 0.12s"}}>{c.book}</div>
+                <style>{`div[data-id="${c.id}"]:hover > * { color: #fff !important; }`}</style>
+              </div>
+            ))}
+          </div>
+
+          {saved.length > 0 && (<>
+            <p style={{fontSize:10,letterSpacing:"0.24em",color:"#aaa",marginBottom:11}}>RECENT</p>
+            <div style={{border:"1px solid #e0e0e0"}}>
+              {saved.slice(0,5).map(t => {
+                const c = CLASSES.find(x=>x.id===t.classId);
+                return (
+                  <div key={t.id}
+                    style={{display:"flex",justifyContent:"space-between",padding:"12px 15px",borderBottom:"1px solid #eee",cursor:"pointer",alignItems:"center"}}
+                    onClick={()=>{setTest(t);setVariant("A");setView("preview");}}>
+                    <span style={{fontWeight:600,fontSize:13}}>{t.variants?.A?.title}</span>
+                    <span style={{fontSize:10,color:"#bbb"}}>{c?.label} · {t.createdAt}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </>)}
+        </main>
+      )}
+
+      {/* CREATE */}
+      {view==="create" && (
+        <main style={{maxWidth:900,margin:"0 auto",padding:"44px 24px 96px"}}>
+          <div style={{fontFamily:"'Archivo Black',sans-serif",fontSize:24,letterSpacing:"0.06em",marginBottom:32}}>NEW TEST</div>
+          <div style={{display:"flex",flexDirection:"column",gap:26}}>
+
+            {/* Class 4×2 */}
+            <div>
+              <div style={S.label}>CLASS</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
+                {CLASSES.map(c => (
+                  <button key={c.id} onClick={()=>setForm(f=>({...f,classId:c.id,topics:[]}))}
+                    style={{...S.chip,width:"100%",...(form.classId===c.id?S.chipOn:{})}}>
+                    {c.label}
+                    <span style={{fontSize:9,opacity:form.classId===c.id?0.6:0.45,marginTop:1,display:"block"}}>{c.level}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Topics */}
+            {form.classId && (
+              <div>
+                <div style={S.label}>TOPICS <span style={{color:"#ccc",fontWeight:400,fontSize:9,letterSpacing:0}}> select one or more</span></div>
+                <ChipList
+                  items={currentTopics}
+                  selected={form.topics}
+                  onToggle={toggleTopic}
+                  onRemove={removeTopic}
+                />
+                <AddInput
+                  placeholder={`Add topic for ${cls?.label}...`}
+                  onAdd={t => {
+                    setAllTopics(p=>({...p,[form.classId]:[...(p[form.classId]||[]),t]}));
+                    setForm(f=>({...f,topics:[...f.topics,t],customTopic:""}));
+                  }}
+                />
+                <input style={{...S.input,marginTop:8,fontSize:12}}
+                  placeholder="Or type a one-off custom topic (overrides selection)..."
+                  value={form.customTopic}
+                  onChange={e=>setForm(f=>({...f,customTopic:e.target.value,topics:[]}))} />
+              </div>
+            )}
+
+            {/* Sections */}
+            <div>
+              <div style={S.label}>SECTIONS</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                {[2,3,4,5,6,7,8,9,10].map(n => (
+                  <button key={n} onClick={()=>setForm(f=>({...f,n}))}
+                    style={{...S.chip,padding:"9px 15px",...(form.n===n?S.chipOn:{})}}>{n}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Exercise types */}
+            <div>
+              <div style={S.label}>EXERCISE TYPES <span style={{color:"#ccc",fontWeight:400,fontSize:9,letterSpacing:0}}> optional — leave empty for auto</span></div>
+              <ChipList
+                items={allTypes}
+                selected={form.types}
+                onToggle={toggleType}
+                onRemove={removeType}
+              />
+              <AddInput
+                placeholder="Add new exercise type..."
+                onAdd={t => {
+                  setAllTypes(p=>[...p,t]);
+                  setForm(f=>({...f,types:[...f.types,t]}));
+                }}
+              />
+            </div>
+
+            {/* Vocabulary */}
+            <div>
+              <div style={S.label}>SPECIFIC VOCABULARY</div>
+              <textarea style={{...S.input,resize:"vertical"}} rows={2}
+                placeholder="e.g. drought, species, recycle, pollution..."
+                value={form.words} onChange={e=>setForm(f=>({...f,words:e.target.value}))} />
+            </div>
+
+            {/* A/B */}
+            <div>
+              <div style={S.label}>A/B VARIANTS</div>
+              <div style={{display:"flex",alignItems:"center",gap:11}}>
+                <div style={{width:40,height:22,borderRadius:11,background:form.ab?"#0a0a0a":"#ddd",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}}
+                  onClick={()=>setForm(f=>({...f,ab:!f.ab}))}>
+                  <div style={{position:"absolute",top:3,left:form.ab?19:3,width:16,height:16,borderRadius:"50%",background:"#fff",transition:"left 0.2s"}}/>
+                </div>
+                <span style={{fontSize:12,color:"#888"}}>{form.ab?"A + B — anti-cheating":"Single variant"}</span>
+              </div>
+            </div>
+
+            <button style={{...S.btnPrimary,opacity:(!form.classId||!activeTopic||gen)?0.25:1}}
+              onClick={generate} disabled={gen||!form.classId||!activeTopic}>
+              {gen ? <><Spinner/>&nbsp;{genMsg}</> : "GENERATE TEST →"}
+            </button>
+          </div>
+        </main>
+      )}
+
+      {/* PREVIEW */}
+      {view==="preview" && activeData && (
+        <main style={{maxWidth:800,margin:"0 auto",padding:"36px 24px 96px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:22,gap:10,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontFamily:"'Archivo Black',sans-serif",fontSize:19,letterSpacing:"0.04em"}}>{activeData.title}</div>
+              <div style={{fontSize:10,letterSpacing:"0.14em",color:"#bbb",marginTop:3}}>{activeData.class} · {activeData.level} · {activeData.topics||activeData.topic}</div>
+            </div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+              {test?.variants?.B && (
+                <div style={{display:"flex",border:"1px solid #d0d0d0"}}>
+                  {["A","B"].map(v => (
+                    <button key={v} onClick={()=>setVariant(v)}
+                      style={{background:variant===v?"#0a0a0a":"none",color:variant===v?"#fff":"#aaa",border:"none",padding:"7px 14px",fontSize:10,letterSpacing:"0.14em",fontFamily:"'Archivo',sans-serif",fontWeight:600,cursor:"pointer"}}>
+                      VARIANT {v}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button style={S.btnGhost} onClick={saveTest}>SAVE</button>
+              <button style={S.btnGhost} onClick={()=>openPDF(activeData,variant)}>PDF ↗</button>
+              <button style={{...S.btnGhost,minWidth:72}} onClick={()=>{try{exportWord(activeData,variant);}catch(e){alert(e.message);}}}>
+                WORD ↓
+              </button>
+              <button style={S.btnDark} onClick={()=>setView("create")}>← BACK</button>
+            </div>
+          </div>
+
+          <div style={{borderTop:"3px solid #0a0a0a",borderBottom:"1px solid #d0d0d0",padding:"15px 0",marginBottom:26,display:"flex",justifyContent:"space-between",alignItems:"flex-end",flexWrap:"wrap",gap:12}}>
+            <div>
+              <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"#ccc",letterSpacing:"0.16em",marginBottom:3}}>VARIANT {variant}</div>
+              <div style={{fontFamily:"'Archivo Black',sans-serif",fontSize:17,letterSpacing:"0.03em"}}>{activeData.title}</div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              <span style={{fontSize:11,fontWeight:500}}>NAME: _________________________________</span>
+              <span style={{fontSize:11,fontWeight:500}}>CLASS: _____________ DATE: ______________</span>
+            </div>
+          </div>
+
+          {activeData.sections?.map((sec,i) => (
+            <SectionCard key={`${variant}-${i}`} section={sec} index={i} variant={variant}
+              cls={CLASSES.find(c=>c.id===test.classId)} topic={activeData.topics||activeData.topic}
+              apiKey={apiKey}
+              onUpdate={(idx,s)=>updSec(variant,idx,s)}/>
+          ))}
+
+          <div style={{borderTop:"2px solid #0a0a0a",paddingTop:10,textAlign:"right",fontFamily:"'Archivo Black',sans-serif",fontSize:12,letterSpacing:"0.1em"}}>
+            TOTAL: _____ / {activeData.sections?.reduce((s,x)=>s+(x.score||0),0)}
+          </div>
+        </main>
+      )}
+
+      {/* SAVED */}
+      {view==="saved" && (
+        <main style={{maxWidth:900,margin:"0 auto",padding:"44px 24px 96px"}}>
+          <div style={{fontFamily:"'Archivo Black',sans-serif",fontSize:24,letterSpacing:"0.06em",marginBottom:20}}>SAVED TESTS</div>
+          <div style={{display:"flex",gap:7,marginBottom:16}}>
+            <input style={{...S.input,flex:1}} placeholder="Search..." value={search} onChange={e=>setSearch(e.target.value)}/>
+            <select style={{border:"1px solid #d0d0d0",padding:"10px 11px",fontSize:10,fontFamily:"'Archivo',sans-serif",background:"#f6f6f4",outline:"none",letterSpacing:"0.1em"}}
+              value={filterCls} onChange={e=>setFilterCls(e.target.value)}>
+              <option value="">ALL CLASSES</option>
+              {CLASSES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          {filtered.length===0 ? (
+            <div style={{textAlign:"center",padding:"64px 0",fontSize:11,color:"#ccc",letterSpacing:"0.15em"}}>NO TESTS SAVED YET</div>
+          ) : (
+            <div style={{border:"1px solid #e0e0e0"}}>
+              {filtered.map(t => {
+                const c = CLASSES.find(x=>x.id===t.classId);
+                return (
+                  <div key={t.id} style={{display:"flex",alignItems:"center",padding:"12px 15px",borderBottom:"1px solid #eee",gap:6}}>
+                    <div style={{flex:1,cursor:"pointer"}} onClick={()=>{setTest(t);setVariant("A");setView("preview");}}>
+                      <div style={{fontWeight:600,fontSize:13}}>{t.variants?.A?.title}</div>
+                      <div style={{fontSize:10,color:"#bbb",marginTop:2}}>
+                        {c?.label} · {c?.level} · {t.variants?.A?.topics||t.variants?.A?.topic} · {t.createdAt}
+                        {t.variants?.B && <span style={{background:"#0a0a0a",color:"#fff",fontSize:8,padding:"2px 5px",marginLeft:6}}>A/B</span>}
+                      </div>
+                    </div>
+                    <button style={S.btnGhost} onClick={()=>openPDF(t.variants.A,"A")}>PDF A</button>
+                    {t.variants?.B && <button style={S.btnGhost} onClick={()=>openPDF(t.variants.B,"B")}>PDF B</button>}
+                    <button style={S.btnGhost} onClick={()=>{if(window.confirm("Smazat tento test?"))setSaved(p=>p.filter(x=>x.id!==t.id));}}>✕</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </main>
+      )}
+    </div>
+  );
+}
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+
+const S = {
+  label:{fontSize:10,letterSpacing:"0.22em",color:"#aaa",marginBottom:9,fontWeight:500},
+  micro:{fontSize:9,letterSpacing:"0.18em",color:"#bbb",marginBottom:3,fontWeight:500},
+  chip:{background:"none",border:"1px solid #d0d0d0",padding:"9px 13px",fontSize:12,letterSpacing:"0.07em",fontFamily:"'Archivo',sans-serif",fontWeight:500,color:"#333",display:"flex",flexDirection:"column",alignItems:"flex-start"},
+  chipOn:{background:"#0a0a0a",borderColor:"#0a0a0a",color:"#fff"},
+  input:{width:"100%",border:"1px solid #d0d0d0",padding:"10px 13px",fontSize:13,fontFamily:"'Archivo',sans-serif",background:"#fff",outline:"none"},
+  btnPrimary:{background:"#0a0a0a",color:"#fff",border:"none",padding:"13px 26px",fontSize:11,letterSpacing:"0.2em",fontFamily:"'Archivo',sans-serif",fontWeight:700,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:7},
+  btnDark:{background:"#0a0a0a",color:"#fff",border:"none",padding:"8px 14px",fontSize:10,letterSpacing:"0.13em",fontFamily:"'Archivo',sans-serif",fontWeight:600,cursor:"pointer"},
+  btnGhost:{background:"none",border:"1px solid #d0d0d0",color:"#666",padding:"7px 11px",fontSize:10,letterSpacing:"0.13em",fontFamily:"'Archivo',sans-serif",fontWeight:500,cursor:"pointer"},
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
